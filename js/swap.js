@@ -1,16 +1,15 @@
-<script>
-// --- estado global simples ---
+// --- estado global ---
 let ORIGINAL_XML_STRING = "";
 let XMLDOC = null;
 let PLAYERS = []; // [{name, type: 'host'|'farmhand', index}]
 
-// Utilidades XML
-function q1(root, sel){ return root.querySelector(sel); }
-function qAll(root, sel){ return Array.from(root.querySelectorAll(sel)); }
-function text(el, sel){
+// Utils
+const q1 = (root, sel) => root.querySelector(sel);
+const qAll = (root, sel) => Array.from(root.querySelectorAll(sel));
+const text = (el, sel) => {
   const n = sel ? q1(el, sel) : el;
   return n ? (n.textContent ?? "").trim() : "";
-}
+};
 function ensureChild(parent, tag){
   let n = q1(parent, tag);
   if(!n){
@@ -19,48 +18,49 @@ function ensureChild(parent, tag){
   }
   return n;
 }
-function childTexts(parent, tag){
-  return qAll(parent, tag).map(n => (n.textContent ?? "").trim());
-}
+const childTexts = (parent, tag) => qAll(parent, tag).map(n => (n.textContent ?? "").trim());
 function addChildText(parent, tag, val){
   const el = parent.ownerDocument.createElement(tag);
   el.textContent = val;
   parent.appendChild(el);
 }
-function serializeXML(doc){
-  return new XMLSerializer().serializeToString(doc);
+const serializeXML = (doc) => new XMLSerializer().serializeToString(doc);
+
+// Copia filhos (sem usar innerHTML, que é problemático em XML)
+function replaceChildrenWithClone(dest, src){
+  while (dest.firstChild) dest.removeChild(dest.firstChild);
+  const doc = dest.ownerDocument;
+  for (let i = 0; i < src.childNodes.length; i++){
+    dest.appendChild(src.childNodes[i].cloneNode(true));
+  }
 }
 
 // === PARSE ===
-// Lê o conteúdo do textarea, detecta host e farmhands (formato novo e antigo)
 function parseFromTextarea(e){
   ORIGINAL_XML_STRING = e.target.value;
   if(!ORIGINAL_XML_STRING || !ORIGINAL_XML_STRING.includes("<SaveGame")) return null;
 
   const parser = new DOMParser();
   XMLDOC = parser.parseFromString(ORIGINAL_XML_STRING, "text/xml");
-  // erro de parsing?
   if(q1(XMLDOC, "parsererror")) return null;
 
   const save = q1(XMLDOC, "SaveGame");
   if(!save) return null;
 
-  const host = q1(save, "> player");
+  // CORREÇÃO: precisa de :scope >
+  const host = q1(save, ":scope > player");
   if(!host) return null;
 
   const hostName = text(host, "name") || "Host";
   PLAYERS = [{ name: hostName, type: "host", index: -1 }];
 
-  // Formato atual: <farmhands><Farmer>...</Farmer></farmhands>
-  const farmhandsRoot = q1(save, "> farmhands");
+  // Formato novo
+  const farmhandsRoot = q1(save, ":scope > farmhands");
   let farmhands = [];
   if (farmhandsRoot){
-    // Stardew salva farmhands como elementos <Farmer> (podem existir 0..N)
     farmhands = qAll(farmhandsRoot, ":scope > Farmer");
   }
-
-  // Formato antigo: <farmhand>... (zero ou mais)
-  // Se não achou nenhum <Farmer>, tenta <farmhand>
+  // Formato antigo
   if (farmhands.length === 0){
     farmhands = qAll(save, ":scope > farmhand");
   }
@@ -87,7 +87,6 @@ function setCharacters(e){
   }
 
   div.appendChild(document.createTextNode("Escolha o novo host (pode levar um momento): "));
-
   players.forEach((p, i) => {
     const input = document.createElement("input");
     input.type = "submit";
@@ -104,13 +103,12 @@ function setCharacters(e){
   }
 }
 
-// === Correções específicas (mesma lógica do seu script, mas via XML) ===
+// === Correções específicas ===
 const TRANSFERRABLE_MAIL = new Set([
   "ccDoorUnlock","ccPantry","ccCraftsRoom","ccFishTank","ccBoilerRoom","ccBulletin","ccVault",
   "jojaPantry","jojaCraftsRoom","jojaFishTank","jojaBoilerRoom","jojaVault","JojaMember",
-  "spring_2_1" // loja do Willy
+  "spring_2_1"
 ]);
-
 const TRANSFERRABLE_EVENTS = new Set([
   "65","1590166","897405","611439","191393","502261"
 ]);
@@ -118,10 +116,8 @@ const TRANSFERRABLE_EVENTS = new Set([
 function mergeMail(newHostEl, oldHostEl){
   const newMailRoot = ensureChild(newHostEl, "mailReceived");
   const oldMailRoot = ensureChild(oldHostEl, "mailReceived");
-
   const newSet = new Set(childTexts(newMailRoot, "string"));
   const oldList = childTexts(oldMailRoot, "string");
-
   oldList.forEach(m => {
     if (TRANSFERRABLE_MAIL.has(m) && !newSet.has(m)){
       addChildText(newMailRoot, "string", m);
@@ -133,10 +129,8 @@ function mergeMail(newHostEl, oldHostEl){
 function mergeEvents(newHostEl, oldHostEl){
   const newEvRoot = ensureChild(newHostEl, "eventsSeen");
   const oldEvRoot = ensureChild(oldHostEl, "eventsSeen");
-
   const newSet = new Set(childTexts(newEvRoot, "int"));
   const oldList = childTexts(oldEvRoot, "int");
-
   oldList.forEach(ev => {
     if (TRANSFERRABLE_EVENTS.has(ev) && !newSet.has(ev)){
       addChildText(newEvRoot, "int", ev);
@@ -155,12 +149,10 @@ function fixUpgradeLevels(newHostEl, oldHostEl){
   copySimpleTag(newHostEl, oldHostEl, "houseUpgradeLevel");
   copySimpleTag(newHostEl, oldHostEl, "daysUntilHouseUpgrade");
 }
-
 function fixHomeLocationForceFarmHouse(newHostEl){
   const h = ensureChild(newHostEl, "homeLocation");
   h.textContent = "FarmHouse";
 }
-
 function fixHomeLocationCopy(newHostEl, oldHostEl){
   copySimpleTag(newHostEl, oldHostEl, "homeLocation");
 }
@@ -180,55 +172,46 @@ function submit(idx){
 
   const out = document.getElementById("output");
   if(idx === 0){
-    // host atual já é o host desejado
     out.value = ORIGINAL_XML_STRING;
     out.select();
     return;
   }
 
   const save = q1(XMLDOC, "SaveGame");
-  const host = q1(save, "> player");
+  const host = q1(save, ":scope > player"); // CORREÇÃO :scope
 
-  // localizar farmhand alvo (compatível com novo e antigo)
+  // localizar farmhand alvo (novo e antigo)
   let targetEl = null;
-  let farmhandsRoot = q1(save, "> farmhands");
+  const farmhandsRoot = q1(save, ":scope > farmhands"); // CORREÇÃO :scope
   if (farmhandsRoot){
     const list = qAll(farmhandsRoot, ":scope > Farmer");
     targetEl = list[PLAYERS[idx].index] || null;
   }
   if(!targetEl){
-    // fallback para formato antigo
     const listOld = qAll(save, ":scope > farmhand");
     targetEl = listOld[PLAYERS[idx].index] || null;
   }
-
   if(!targetEl){
     out.value = "Erro: não foi possível localizar o farmhand selecionado no XML.";
     return;
   }
 
-  // Estratégia segura: trocar INNER CONTENT entre <player> e <Farmer>/<farmhand>,
-  // preservando o nome da tag de cada (o jogo espera <player> no topo).
-  const hostContent = host.innerHTML;
-  const tgtContent = targetEl.innerHTML;
-
-  // Antes de trocar, vamos clonar elementos para usar nas correções (estado 'original')
+  // Clones para correções
   const hostClone = host.cloneNode(true);
   const tgtClone  = targetEl.cloneNode(true);
 
-  // Swap do conteúdo
-  host.innerHTML = tgtContent;
-  targetEl.innerHTML = hostContent;
+  // Swap de filhos (em XML, sem innerHTML)
+  const hostTemp = host.cloneNode(false);
+  replaceChildrenWithClone(hostTemp, targetEl);
+  replaceChildrenWithClone(targetEl, host);
+  replaceChildrenWithClone(host, hostTemp);
 
-  // Correções:
-  // - Para o novo host (que agora é o conteúdo do farmhand selecionado), herdamos parte do progresso do host original
+  // Correções
   mergeEvents(host, hostClone);
   mergeMail(host, hostClone);
   fixUpgradeLevels(host, hostClone);
-  // opcional: forçar homeLocation "FarmHouse" como no seu script original
   fixHomeLocationForceFarmHouse(host);
 
-  // - Para o farmhand que recebeu o conteúdo antigo do host, mantemos níveis/upgrades/home do próprio farmhand
   fixUpgradeLevels(targetEl, tgtClone);
   fixHomeLocationCopy(targetEl, tgtClone);
 
@@ -238,16 +221,11 @@ function submit(idx){
   out.select();
 }
 
-// Botão copiar
+// Copiar
 function copyOut(){
   const out = document.getElementById("output");
   out.select();
   document.execCommand("copy");
 }
-
-// Se você usa os mesmos IDs do seu HTML original, nada mais muda:
-// - textarea id="input" com oninput="setCharacters(event)"
-// - div id="instructions"
-// - textarea id="output"
-// - botão "Copiar" chamando copyOut()
-</script>
+// Alias opcional se seu HTML ainda chama copy()
+function copy(){ copyOut(); }
